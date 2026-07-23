@@ -1,0 +1,12 @@
+{
+  "name": "ragos-demo-recorder",
+  "private": true,
+  "type": "module",
+  "description": "Playwright walkthrough recorder for the CC-RAGOS demo video (dev tooling, not part of the app).",
+  "scripts": {
+    "record": "node record.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}

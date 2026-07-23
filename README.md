@@ -7,6 +7,17 @@ Enterprise, self-hosted, explainable **multimodal RAG platform** (NotebookLM-sty
 - **Tech stack & flow:** [`techstackwithflow.md`](./techstackwithflow.md)
 - **Scaling:** [`docs/SCALING.md`](./docs/SCALING.md) · **Eval:** [`docs/EVAL-IMPROVEMENTS.md`](./docs/EVAL-IMPROVEMENTS.md) · **Prompts:** [`prompts/README.md`](./prompts/README.md)
 
+## Demo
+
+![CC-RAGOS demo — ask a question, get a grounded answer with a live visual citation](./docs/demo/ragos-demo.gif)
+
+*Ask the workspace a question → streamed, grounded answer with clickable citations and a highlighted
+visual citation. Full-length walkthrough (login → chat → Knowledge Graph → embeddings → mind map → the
+"Explain the Pipeline" tour): [`docs/demo/ragos-demo.mp4`](./docs/demo/ragos-demo.mp4).*
+
+> Regenerate: `cd scripts/demo && npm install && npx playwright install chromium`, then
+> `set -a; source ../../.env; set +a; node record.mjs` (records to `out/`), and convert with `ffmpeg`.
+
 ## Architecture
 
 ```
