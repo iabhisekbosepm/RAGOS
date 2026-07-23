@@ -6,9 +6,13 @@ corpus — which stores images as embedded captions — can be searched), and th
 raw image is also handed to a vision model at generation time so the answer can
 actually "see" it. No image-vector similarity here; retrieval stays text-space.
 """
+import logging
+
 import httpx
 
 from .config import settings
+
+_log = logging.getLogger(__name__)
 
 # Combined caption + verbatim-text transcription, so fine labels/text in
 # diagrams and screenshots become searchable (light OCR).
@@ -40,7 +44,8 @@ async def describe(data_url: str) -> str:
             )
             resp.raise_for_status()
             return (resp.json()["choices"][0]["message"]["content"] or "").strip()
-    except Exception:
+    except Exception as e:
+        _log.warning("image describe failed — image ignored for retrieval: %s", e)
         return ""
 
 

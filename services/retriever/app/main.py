@@ -7,7 +7,9 @@ Roles:
 Dense retrieval via Qdrant + OpenRouter embeddings; LLM answer via OpenRouter.
 HyDE / GraphRAG / rerank / sparse are stubbed for later phases (clearly marked).
 """
+import asyncio
 import json
+import logging
 import re
 import time
 from typing import Any, Literal
@@ -27,7 +29,7 @@ from . import obs
 from . import prompts
 from . import auth as auth_mod
 from . import vision as vision_mod
-from .auth import current_user, require_admin, require_editor
+from .auth import current_user, require_admin, require_editor, require_viewer
 from .chat import build_messages, complete, condense_query, stream_llm
 from .config import settings
 from .embeddings import embed_one
@@ -46,10 +48,7 @@ app.add_middleware(
 
 qdrant = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key or None)
 
-
-import logging as _logging
-
-_log = _logging.getLogger("ccragos.auth")
+_log = logging.getLogger("ccragos.retriever")
 
 
 @app.on_event("startup")
@@ -200,9 +199,11 @@ def _sse(obj: dict[str, Any]) -> str:
 async def chat(req: ChatRequest, _user: dict = Depends(current_user)) -> StreamingResponse:
     """Stream a grounded answer with visible pipeline steps + citations (SSE). Persists to SQLite."""
     model = req.model or settings.llm_model
-    conversation_id = req.conversation_id or db.create_conversation(req.collection, req.query, _user["id"])
-    prior = db.get_messages(conversation_id)  # history BEFORE this turn (conversational RAG)
-    db.add_message(conversation_id, "user", req.query, {"strategy": req.strategy})
+    # SQLite calls are blocking — keep them off the event loop in this async handler.
+    conversation_id = req.conversation_id or await asyncio.to_thread(
+        db.create_conversation, req.collection, req.query, _user["id"])
+    prior = await asyncio.to_thread(db.get_messages, conversation_id)  # history BEFORE this turn
+    await asyncio.to_thread(db.add_message, conversation_id, "user", req.query, {"strategy": req.strategy})
 
     lf = obs.client()
     root = lf.start_observation(
@@ -247,7 +248,8 @@ async def chat(req: ChatRequest, _user: dict = Depends(current_user)) -> Streami
                 yield _sse({"type": "token", "text": msg})
                 yield _sse({"type": "citations", "records": []})
                 yield _sse({"type": "done"})
-                db.add_message(conversation_id, "assistant", msg, {"citations": [], "out_of_scope": True})
+                await asyncio.to_thread(db.add_message, conversation_id, "assistant", msg,
+                                        {"citations": [], "out_of_scope": True})
                 if root:
                     root.update(output=msg, metadata={"out_of_scope": True})
                 return
@@ -273,7 +275,7 @@ async def chat(req: ChatRequest, _user: dict = Depends(current_user)) -> Streami
                 yield _sse({"type": "token", "text": msg})
                 yield _sse({"type": "citations", "records": []})
                 yield _sse({"type": "done"})
-                db.add_message(conversation_id, "assistant", msg, {"citations": []})
+                await asyncio.to_thread(db.add_message, conversation_id, "assistant", msg, {"citations": []})
                 if root:
                     root.update(output=msg)
                 return
@@ -300,14 +302,16 @@ async def chat(req: ChatRequest, _user: dict = Depends(current_user)) -> Streami
 
             yield _sse({"type": "citations", "records": sources})
             yield _sse({"type": "done"})
-            db.add_message(conversation_id, "assistant", answer,
-                           {"citations": sources, "strategy": req.strategy, "model": model})
+            await asyncio.to_thread(db.add_message, conversation_id, "assistant", answer,
+                                    {"citations": sources, "strategy": req.strategy, "model": model})
             if root:
                 root.update(output=answer)
-        except Exception as e:  # surface errors to the UI, never hang
-            yield _sse({"type": "error", "detail": str(e)})
-            db.add_message(conversation_id, "assistant", "".join(answer_parts) or f"[error: {e}]",
-                           {"error": str(e)})
+        except Exception as e:  # surface errors to the UI, never hang — full detail stays server-side
+            _log.exception("chat stream failed (conversation %s)", conversation_id)
+            detail = f"{type(e).__name__}: request failed — see server logs"
+            yield _sse({"type": "error", "detail": detail})
+            await asyncio.to_thread(db.add_message, conversation_id, "assistant",
+                                    "".join(answer_parts) or f"[error: {detail}]", {"error": detail})
             if root:
                 root.update(output=f"[error: {e}]", level="ERROR")
         finally:
@@ -358,7 +362,7 @@ class WorkspaceRequest(BaseModel):
 
 
 @app.get("/workspaces")
-def workspaces() -> dict[str, Any]:
+def workspaces(_: dict = Depends(require_viewer)) -> dict[str, Any]:
     """List workspaces (merges Qdrant collections with saved names + chunk counts)."""
     saved = {w["collection"]: w for w in db.list_workspaces()}
     existing = {c.name for c in qdrant.get_collections().collections}
@@ -373,8 +377,9 @@ def workspaces() -> dict[str, Any]:
 
 @app.post("/workspaces")
 def workspace_create(req: WorkspaceRequest, _: dict = Depends(require_admin)) -> dict[str, Any]:
-    if not req.collection.strip():
-        raise HTTPException(status_code=400, detail="collection required")
+    # Collection names become Qdrant collections AND media/graph path components.
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", req.collection.strip()):
+        raise HTTPException(status_code=400, detail="collection must match [A-Za-z0-9_-]{1,64}")
     if not qdrant.collection_exists(req.collection):
         qdrant.create_collection(
             collection_name=req.collection,
@@ -406,8 +411,8 @@ async def study(req: StudyRequest, _: dict = Depends(require_editor)) -> dict[st
     if req.topic:
         records = await dense(qdrant, req.topic, req.collection, 8)
     else:
-        points, _ = qdrant.scroll(
-            collection_name=req.collection, limit=12, with_payload=True, with_vectors=False
+        points, _ = await asyncio.to_thread(
+            qdrant.scroll, collection_name=req.collection, limit=12, with_payload=True, with_vectors=False
         )
         records = [{"content": p.payload.get("content", "")} for p in points]
     context = "\n\n".join(r["content"] for r in records)[:8000]
@@ -415,7 +420,7 @@ async def study(req: StudyRequest, _: dict = Depends(require_editor)) -> dict[st
         return {"error": "collection is empty"}
     result = await study_generate(req.tool, context, req.count, req.model)
     if "error" not in result:
-        result["id"] = db.save_study(req.collection, req.tool, req.topic, result)
+        result["id"] = await asyncio.to_thread(db.save_study, req.collection, req.tool, req.topic, result)
     return result
 
 
@@ -431,7 +436,8 @@ async def audio(req: AudioRequest, _: dict = Depends(require_editor)) -> dict[st
     if req.topic:
         records = await dense(qdrant, req.topic, req.collection, 8)
     else:
-        points, _ = qdrant.scroll(collection_name=req.collection, limit=12, with_payload=True, with_vectors=False)
+        points, _ = await asyncio.to_thread(
+            qdrant.scroll, collection_name=req.collection, limit=12, with_payload=True, with_vectors=False)
         records = [{"content": p.payload.get("content", "")} for p in points]
     context = "\n\n".join(r["content"] for r in records)[:8000]
     if not context.strip():
@@ -443,17 +449,17 @@ async def audio(req: AudioRequest, _: dict = Depends(require_editor)) -> dict[st
     audio_url = await audio_mod.synthesize(script, req.collection)
     payload = {"tool": "audio", "script": script, "audio_url": audio_url,
                "note": None if audio_url else "Set DEEPGRAM_API_KEY to render audio (script only for now)."}
-    payload["id"] = db.save_study(req.collection, "audio", req.topic, payload)
+    payload["id"] = await asyncio.to_thread(db.save_study, req.collection, "audio", req.topic, payload)
     return payload
 
 
 @app.get("/study/artifacts")
-def study_list(collection: str) -> dict[str, Any]:
+def study_list(collection: str, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     return {"artifacts": db.list_study(collection)}
 
 
 @app.get("/study/artifacts/{aid}")
-def study_get(aid: str) -> dict[str, Any]:
+def study_get(aid: str, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     a = db.get_study(aid)
     return a or {"error": "not found"}
 
@@ -496,7 +502,8 @@ class EvalRunRequest(BaseModel):
 
 @app.post("/eval/generate")
 async def eval_generate(req: EvalGenRequest, _: dict = Depends(require_editor)) -> dict[str, Any]:
-    points, _ = qdrant.scroll(collection_name=req.collection, limit=14, with_payload=True, with_vectors=False)
+    points, _ = await asyncio.to_thread(
+        qdrant.scroll, collection_name=req.collection, limit=14, with_payload=True, with_vectors=False)
     context = "\n\n".join(p.payload.get("content", "") for p in points)[:9000]
     if not context.strip():
         return {"error": "collection is empty"}
@@ -507,7 +514,7 @@ async def eval_generate(req: EvalGenRequest, _: dict = Depends(require_editor)) 
 
 
 @app.get("/eval/items")
-def eval_items(collection: str) -> dict[str, Any]:
+def eval_items(collection: str, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     return {"items": db.list_eval_items(collection)}
 
 
@@ -552,12 +559,12 @@ async def eval_run(req: EvalRunRequest, _: dict = Depends(require_editor)) -> di
 
 
 @app.get("/eval/runs")
-def eval_runs(collection: str) -> dict[str, Any]:
+def eval_runs(collection: str, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     return {"runs": db.list_eval_runs(collection)}
 
 
 @app.get("/eval/runs/{rid}")
-def eval_run_get(rid: str) -> dict[str, Any]:
+def eval_run_get(rid: str, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     return db.get_eval_run(rid) or {"error": "not found"}
 
 
@@ -575,7 +582,7 @@ async def graph_build(req: GraphBuildRequest, _: dict = Depends(require_editor))
 
 
 @app.get("/graph")
-def graph_get(collection: str) -> dict[str, Any]:
+def graph_get(collection: str, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     """Nodes + edges for the graph visualization."""
     return graph_mod.graph_data(collection)
 
@@ -589,13 +596,13 @@ class FeedbackRequest(BaseModel):
 
 
 @app.post("/feedback")
-def feedback(req: FeedbackRequest) -> dict[str, str]:
+def feedback(req: FeedbackRequest, _: dict = Depends(require_viewer)) -> dict[str, str]:
     db.add_feedback(req.collection, req.conversation_id, req.rating, req.question)
     return {"status": "ok"}
 
 
 @app.get("/analytics")
-def analytics(collection: str) -> dict[str, Any]:
+def analytics(collection: str, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     """Usage + quality analytics for a workspace, derived from chat history + Qdrant."""
     from collections import Counter
 
@@ -644,7 +651,7 @@ def analytics(collection: str) -> dict[str, Any]:
 
 # ── Document library ─────────────────────────────────────────────────
 @app.get("/documents")
-def documents(collection: str) -> dict[str, Any]:
+def documents(collection: str, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     """List distinct source documents in a workspace (aggregated from Qdrant)."""
     if not qdrant.collection_exists(collection):
         return {"documents": []}
@@ -681,22 +688,22 @@ _suggest_cache: dict[str, tuple[int, list[str]]] = {}
 
 
 @app.get("/suggestions")
-async def suggestions(collection: str) -> dict[str, Any]:
+async def suggestions(collection: str, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     """Workspace-specific starter questions (LLM-generated from sample chunks, cached).
 
     Cache is keyed by the workspace's chunk count, so it refreshes when documents change.
     """
-    if not qdrant.collection_exists(collection):
+    if not await asyncio.to_thread(qdrant.collection_exists, collection):
         return {"suggestions": []}
-    total = qdrant.count(collection_name=collection).count
+    total = (await asyncio.to_thread(qdrant.count, collection_name=collection)).count
     if total == 0:
         return {"suggestions": []}
     cached = _suggest_cache.get(collection)
     if cached and cached[0] == total:
         return {"suggestions": cached[1], "cached": True}
 
-    points, _ = qdrant.scroll(collection_name=collection, limit=12,
-                              with_payload=True, with_vectors=False)
+    points, _ = await asyncio.to_thread(qdrant.scroll, collection_name=collection, limit=12,
+                                        with_payload=True, with_vectors=False)
     sample = "\n\n".join((p.payload.get("content", "") or "")[:400] for p in points)
     if not sample.strip():
         return {"suggestions": []}
@@ -709,7 +716,8 @@ async def suggestions(collection: str) -> dict[str, Any]:
         cleaned = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
         m = re.search(r"\[.*\]", cleaned, re.DOTALL)
         qs = [str(q).strip() for q in json.loads(m.group(0) if m else cleaned) if str(q).strip()][:4]
-    except Exception:
+    except Exception as e:
+        _log.warning("suggestion generation failed for %s: %s", collection, e)
         qs = []
     if qs:
         _suggest_cache[collection] = (total, qs)
@@ -717,7 +725,7 @@ async def suggestions(collection: str) -> dict[str, Any]:
 
 
 @app.get("/document")
-def document_view(collection: str, source: str) -> dict[str, Any]:
+def document_view(collection: str, source: str, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     """Full view payload for one document: image, ordered PDF pages, or extracted text.
 
     Images keep their original file; PDFs keep per-page renders; plain documents keep
@@ -762,10 +770,10 @@ def health() -> dict[str, str]:
 
 
 @app.get("/chunks")
-def list_chunks(collection: str, limit: int = 100) -> dict[str, Any]:
+def list_chunks(collection: str, limit: int = 100, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     """Chunk Explorer: list chunks + metadata for a collection/document."""
     points, _ = qdrant.scroll(
-        collection_name=collection, limit=limit, with_payload=True, with_vectors=False
+        collection_name=collection, limit=min(limit, 1000), with_payload=True, with_vectors=False
     )
     return {
         "chunks": [
@@ -777,7 +785,8 @@ def list_chunks(collection: str, limit: int = 100) -> dict[str, Any]:
 
 
 @app.get("/embeddings/umap")
-async def embeddings_umap(collection: str, limit: int = 500, query: str = "") -> dict[str, Any]:
+async def embeddings_umap(collection: str, limit: int = 500, query: str = "",
+                          _: dict = Depends(require_viewer)) -> dict[str, Any]:
     """Embedding Explorer: project chunk vectors to 2D via UMAP.
 
     Optional `query` is embedded and projected alongside (flagged is_query) so the
@@ -785,9 +794,12 @@ async def embeddings_umap(collection: str, limit: int = 500, query: str = "") ->
     """
     import numpy as np
 
-    points, _ = qdrant.scroll(
-        collection_name=collection, limit=limit, with_payload=True, with_vectors=True
+    points, _pt = await asyncio.to_thread(
+        qdrant.scroll, collection_name=collection, limit=min(limit, 1000),
+        with_payload=True, with_vectors=True,
     )
+    # Named-vector collections return dicts and points can lack vectors — keep plain lists only.
+    points = [p for p in points if isinstance(p.vector, list)]
     if not points:
         return {"points": []}
 
@@ -806,7 +818,8 @@ async def embeddings_umap(collection: str, limit: int = 500, query: str = "") ->
         vectors = vectors + [await embed_one(query)]
         labels.append({"id": "__query__", "content": query, "source": "", "is_query": True})
 
-    coords = _project_2d(np.array(vectors, dtype="float32"))
+    # UMAP fit is CPU-heavy — keep it off the event loop.
+    coords = await asyncio.to_thread(_project_2d, np.array(vectors, dtype="float32"))
     return {
         "points": [
             {**lbl, "x": float(c[0]), "y": float(c[1])} for lbl, c in zip(labels, coords)
@@ -847,14 +860,15 @@ class PlaygroundRequest(BaseModel):
 
 
 @app.post("/playground/compare")
-async def playground_compare(req: PlaygroundRequest) -> dict[str, Any]:
+async def playground_compare(req: PlaygroundRequest, _: dict = Depends(require_viewer)) -> dict[str, Any]:
     """Retrieval Playground: run one query through N strategies, return side-by-side."""
     results: dict[str, Any] = {}
     for strat in req.strategies:
         try:
             results[strat] = await run_strategy(
-                qdrant, strat, req.query, req.collection, req.top_k, req.rerank
+                qdrant, strat, req.query, req.collection, min(req.top_k, 20), req.rerank
             )
         except Exception as e:
-            results[strat] = {"error": str(e)}
+            _log.exception("playground strategy %s failed", strat)
+            results[strat] = {"error": f"{type(e).__name__}: strategy failed — see server logs"}
     return {"query": req.query, "results": results}

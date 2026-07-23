@@ -7,7 +7,9 @@ a JSON file per collection. Flow:
   search  → LLM pulls entities from the query, match graph nodes, expand 1 hop,
             return the chunks attached to those entities (multi-hop grounding).
 """
+import asyncio
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -18,10 +20,16 @@ from . import prompts
 from .chat import complete
 from .config import settings
 
+_log = logging.getLogger(__name__)
+
 GRAPH_DIR = Path("graph-storage")
+_COLLECTION_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 def _path(collection: str) -> Path:
+    # Collection is user input and becomes a filename — never let it traverse out.
+    if not _COLLECTION_RE.fullmatch(collection):
+        raise ValueError(f"invalid collection name: {collection!r}")
     GRAPH_DIR.mkdir(exist_ok=True)
     return GRAPH_DIR / f"{collection}.json"
 
@@ -41,13 +49,14 @@ async def _triples(chunk: str, model: str) -> list[list[str]]:
         raw = await complete(messages, model, max_tokens=500)
         triples = _extract_json_array(raw)
         return [t for t in triples if isinstance(t, list) and len(t) == 3]
-    except Exception:
+    except Exception as e:
+        _log.warning("triple extraction failed for chunk (graph will be sparser): %s", e)
         return []
 
 
 async def build(qdrant, collection: str, model: str | None = None, max_chunks: int = 20) -> dict[str, Any]:
-    points, _ = qdrant.scroll(
-        collection_name=collection, limit=max_chunks, with_payload=True, with_vectors=False
+    points, _ = await asyncio.to_thread(
+        qdrant.scroll, collection_name=collection, limit=max_chunks, with_payload=True, with_vectors=False
     )
     g = nx.Graph()
     model = model or settings.llm_model
@@ -75,7 +84,10 @@ async def build(qdrant, collection: str, model: str | None = None, max_chunks: i
 
 
 def load(collection: str) -> dict[str, Any] | None:
-    p = _path(collection)
+    try:
+        p = _path(collection)
+    except ValueError:
+        return None  # invalid name can never have a stored graph
     return json.loads(p.read_text()) if p.exists() else None
 
 
@@ -103,7 +115,8 @@ async def graphrag_search(query: str, collection: str, top_k: int, model: str | 
     ]
     try:
         entities = [e.lower() for e in _extract_json_array(await complete(messages, model or settings.llm_model, 150))]
-    except Exception:
+    except Exception as e:
+        _log.warning("graph entity extraction failed, matching on raw query words only: %s", e)
         entities = []
     # Always also match on raw query words (>=4 chars) for robustness on small graphs.
     entities += [w for w in re.findall(r"[a-z0-9]{4,}", query.lower())]

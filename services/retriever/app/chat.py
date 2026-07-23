@@ -3,12 +3,15 @@
 Prompt styles power the Prompt Playground; model override powers the LLM Playground.
 """
 import json
+import logging
 from typing import AsyncIterator
 
 import httpx
 
 from . import prompts
 from .config import settings
+
+_log = logging.getLogger(__name__)
 
 _STYLE_FILE = {"standard": "chat_style_standard", "cot": "chat_style_cot", "concise": "chat_style_concise"}
 
@@ -52,7 +55,8 @@ async def condense_query(history: list[dict], query: str, model: str) -> str:
     try:
         out = (await complete(messages, model, max_tokens=120)).strip()
         return out or query
-    except Exception:
+    except Exception as e:
+        _log.warning("condense_query failed, retrieving on the raw query: %s", e)
         return query
 
 

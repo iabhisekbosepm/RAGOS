@@ -15,3 +15,4 @@ graph-storage/
 data/
 media/
 scripts/demo/out/
+.mcp.json

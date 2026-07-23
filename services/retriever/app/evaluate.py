@@ -6,12 +6,15 @@ Metrics (0-1, same concepts as Ragas — computed via our own OpenRouter judge, 
   - context_relevance : were the retrieved passages relevant to the question? (retrieval quality)
 """
 import json
+import logging
 import re
 from typing import Any
 
 from . import prompts
 from .chat import complete
 from .config import settings
+
+_log = logging.getLogger(__name__)
 
 
 def _extract_json(text: str) -> Any:
@@ -30,7 +33,8 @@ async def generate_set(context: str, count: int, model: str | None = None) -> li
     try:
         data = _extract_json(raw)
         return [d for d in data if isinstance(d, dict) and d.get("question")][:count]
-    except Exception:
+    except Exception as e:
+        _log.warning("golden-set generation parse failed: %s · raw=%r", e, raw[:200])
         return []
 
 
@@ -53,6 +57,7 @@ async def judge(question: str, answer: str, contexts: list[str], expected: str =
                     "reason": str(d.get("reason", ""))[:200], "errored": False}
         except Exception as e:
             last = e
+            _log.warning("judge attempt %d failed: %s", attempt + 1, e)
     # Persistent failure → mark errored so it can be EXCLUDED from averages (not scored 0).
     return {"faithfulness": None, "answer_relevancy": None, "context_relevance": None,
             "reason": f"judge parse error: {last}", "errored": True}

@@ -4,6 +4,7 @@ Pipeline: context → dialogue script (Host/Guest turns) → per-line TTS with a
 per speaker → concatenated MP3. Gracefully returns the script alone if no Deepgram key.
 """
 import json
+import logging
 import re
 import uuid
 from pathlib import Path
@@ -14,7 +15,10 @@ from . import prompts
 from .chat import complete
 from .config import settings
 
+_log = logging.getLogger(__name__)
+
 MEDIA_DIR = Path("media")
+_COLLECTION_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 def _extract_json_array(text: str) -> list:
@@ -33,7 +37,8 @@ async def make_script(context: str, model: str | None = None, turns: int = 8) ->
     try:
         script = _extract_json_array(raw)
         return [t for t in script if isinstance(t, dict) and t.get("text")]
-    except Exception:
+    except Exception as e:
+        _log.warning("audio script parse failed: %s · raw=%r", e, raw[:200])
         return []
 
 
@@ -53,6 +58,9 @@ async def synthesize(script: list[dict], collection: str) -> str | None:
     """Render the script to a single MP3 in media/, return its /media URL (or None)."""
     if not settings.deepgram_api_key or not script:
         return None
+    # Collection becomes a directory name — never let it traverse out of media/.
+    if not _COLLECTION_RE.fullmatch(collection):
+        raise ValueError(f"invalid collection name: {collection!r}")
     chunks: list[bytes] = []
     for turn in script:
         voice = settings.tts_voice_guest if turn.get("speaker") == "Guest" else settings.tts_voice_host

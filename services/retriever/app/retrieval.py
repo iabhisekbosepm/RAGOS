@@ -9,6 +9,8 @@ BM25 runs in-process over the collection's chunks (fine for workshop-scale corpo
 for large corpora move sparse vectors into Qdrant). Each function returns a list of
 {content, score, title, metadata} dicts.
 """
+import asyncio
+import logging
 from typing import Any
 
 import httpx
@@ -19,6 +21,8 @@ from . import prompts
 from .chat import complete
 from .config import settings
 from .embeddings import embed_one
+
+_log = logging.getLogger(__name__)
 
 
 def _source_filter(sources: list[str] | None) -> Filter | None:
@@ -56,6 +60,7 @@ async def rerank(query: str, records: list[dict], top_k: int) -> list[dict]:
         return out
     except Exception as e:
         # Graceful fallback: keep original order, flag that rerank was skipped.
+        _log.warning("rerank failed, falling back to original order: %s", e)
         for r in records[:top_k]:
             r["rerank_error"] = str(e)[:120]
         return records[:top_k]
@@ -72,7 +77,9 @@ def _payload_to_record(payload: dict, score: float) -> dict[str, Any]:
 
 async def dense(qdrant, query: str, collection: str, top_k: int, sources: list[str] | None = None) -> list[dict]:
     vector = await embed_one(query)
-    hits = qdrant.search(
+    # Sync Qdrant client — keep the HTTP call off the event loop.
+    hits = await asyncio.to_thread(
+        qdrant.search,
         collection_name=collection, query_vector=vector, limit=top_k, with_payload=True,
         query_filter=_source_filter(sources),
     )
@@ -100,8 +107,9 @@ def _bm25(query: str, payloads: list[dict], top_k: int) -> list[tuple[dict, int]
 async def hybrid(qdrant, query: str, collection: str, top_k: int, sources: list[str] | None = None, k_rrf: int = 60) -> list[dict]:
     """Dense + BM25 fused with Reciprocal Rank Fusion."""
     dense_hits = await dense(qdrant, query, collection, top_k * 2, sources)
-    payloads = _all_chunks(qdrant, collection, sources)
-    bm25_hits = _bm25(query, payloads, top_k * 2)
+    # Scroll (network) and BM25 scoring (CPU) both block — run off the event loop.
+    payloads = await asyncio.to_thread(_all_chunks, qdrant, collection, sources)
+    bm25_hits = await asyncio.to_thread(_bm25, query, payloads, top_k * 2)
 
     fused: dict[str, dict[str, Any]] = {}
 

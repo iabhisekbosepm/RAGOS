@@ -7,6 +7,7 @@ Uses a vision-capable model (default Gemini Flash). Images are sent as base64 da
 ColPali page-image late-interaction is the heavier GPU-host upgrade; this covers the
 visual-citation UX without multi-GB local weights.
 """
+import asyncio
 import base64
 import json
 import re
@@ -72,7 +73,7 @@ async def locate(path: str, query: str) -> dict:
             if all(v <= 1000 for v in bbox):
                 bbox = [v / 1000.0 for v in bbox]          # 0-1000 normalized (Gemini)
             else:
-                w, h = Image.open(path).size                # raw pixels
+                w, h = await asyncio.to_thread(lambda: Image.open(path).size)  # raw pixels
                 x, y, bw, bh = bbox
                 bbox = [x / w, y / h, bw / w, bh / h]
         bbox = [min(max(v, 0.0), 1.0) for v in bbox]

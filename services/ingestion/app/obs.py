@@ -1,6 +1,9 @@
 """Langfuse observability — lazy, optional. No-op if keys aren't configured."""
+import logging
+
 from .config import settings
 
+_log = logging.getLogger(__name__)
 _client = None
 _init = False
 
@@ -18,7 +21,8 @@ def client():
                 secret_key=settings.langfuse_secret_key,
                 host=settings.langfuse_host,
             )
-        except Exception:
+        except Exception as e:
+            _log.warning("Langfuse init failed — tracing disabled: %s", e)
             _client = None
     return _client
 
@@ -27,5 +31,5 @@ def flush():
     if _client:
         try:
             _client.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("Langfuse flush failed: %s", e)

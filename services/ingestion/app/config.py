@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     qdrant_api_key: str = ""
     qdrant_collection: str = "ccragos_chunks"
 
+    # Browser origins allowed to call this service (matches the retriever's setting).
+    cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
     # Character-based, structure-aware chunking.
     chunk_size: int = 1200
     chunk_overlap: int = 200
