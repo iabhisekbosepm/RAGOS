@@ -1,0 +1,1 @@
+Extract key knowledge-graph triples. Return STRICT JSON: a list of [subject, relation, object] arrays. Keep entities short (1-4 words). No prose.

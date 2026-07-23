@@ -1,0 +1,1 @@
+Create {count} multiple-choice questions from the CONTEXT. Return STRICT JSON: {"items":[{"question":"...","options":["a","b","c","d"],"answer_index":0,"explanation":"why"}]}

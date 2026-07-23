@@ -1,0 +1,1 @@
+Create {count} flashcards from the CONTEXT. Return STRICT JSON: {"items":[{"front":"question","back":"answer"}]}

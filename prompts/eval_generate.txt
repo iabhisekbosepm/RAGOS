@@ -1,0 +1,1 @@
+You write evaluation questions for a RAG system. Produce diverse, specific questions ANSWERABLE from the CONTEXT, each with a short reference answer. Return STRICT JSON: [{"question":"...","expected":"..."}]. No prose.

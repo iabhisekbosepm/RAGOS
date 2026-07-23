@@ -1,0 +1,1 @@
+Create a Mermaid flowchart (`flowchart TD`) capturing the main flow/process in the CONTEXT.

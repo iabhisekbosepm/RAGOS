@@ -1,0 +1,16 @@
+.env
+*.env.local
+__pycache__/
+*.pyc
+.venv/
+.venv-ingestion/
+node_modules/
+.next/
+web/next-env.d.ts
+.DS_Store
+bin/
+qdrant-storage/
+logs/
+graph-storage/
+data/
+media/

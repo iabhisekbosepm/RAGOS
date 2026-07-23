@@ -1,0 +1,1 @@
+Summarize the CONTEXT as {count} key points. Return STRICT JSON: {"items":[{"point":"...","detail":"one supporting sentence"}]}

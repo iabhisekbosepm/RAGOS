@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    @apply bg-ink text-sand font-sans antialiased;
+    /* Flat, cool — a single very faint lime glow for depth. */
+    background-image: radial-gradient(1000px 640px at 12% -12%, rgba(200, 255, 0, 0.05), transparent 60%);
+    background-attachment: fixed;
+  }
+  ::selection {
+    background: rgba(200, 255, 0, 0.35);
+    color: #0B0B0D;
+  }
+  /* Refined thin scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2f2f36 transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #2f2f36;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: #3d3d45;
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-2xl border border-line bg-surface shadow-panel;
+  }
+  .hairline {
+    @apply border-line;
+  }
+  .eyebrow {
+    @apply font-mono text-[10px] uppercase tracking-[0.18em] text-faint;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-line bg-raised px-3 py-2 text-sm text-sand transition-colors hover:border-amber/50 hover:text-amber;
+  }
+  .btn-accent {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-amber px-4 py-2 text-sm font-medium text-ink transition-all hover:bg-amber-2 disabled:opacity-40;
+  }
+  .field {
+    @apply rounded-lg border border-line bg-ink/60 px-3 py-2 text-sm text-sand placeholder:text-faint focus:border-amber/60 focus:outline-none;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-ash;
+  }
+  /* User message — a lime-tinted gradient bubble with a soft glow + accent edge.
+     Recreates the reference bubble's richness while staying on-palette (no violet). */
+  .bubble-user {
+    @apply relative rounded-2xl rounded-br-md px-4 py-2.5 text-sm text-sand;
+    background-image: linear-gradient(135deg, rgba(200, 255, 0, 0.22), rgba(200, 255, 0, 0.07));
+    border: 1px solid rgba(200, 255, 0, 0.28);
+    box-shadow: 0 10px 30px -14px rgba(200, 255, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  }
+  /* Studio glyph tile — accent-lit on card hover. */
+  .glyph-tile {
+    @apply flex h-8 w-8 items-center justify-center rounded-lg border border-line text-amber transition-all;
+  }
+  .group:hover .glyph-tile {
+    @apply border-amber/60 text-amber;
+    box-shadow: 0 0 0 1px rgba(200, 255, 0, 0.18), 0 6px 18px -8px rgba(200, 255, 0, 0.5);
+  }
+}
+
+/* Display headings: Fraunces reads best slightly tightened. */
+.font-display {
+  letter-spacing: -0.015em;
+}
+
+/* Rendered answer typography */
+.prose-answer h2,
+.prose-answer h3 {
+  @apply font-display;
+}
+
+/* Staggered list/grid reveals — set --i on children for cascade. */
+.stagger > * {
+  animation: rise-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+@media (prefers-reduced-motion: reduce) {
+  .stagger > *,
+  .animate-rise-in { animation: none !important; }
+}

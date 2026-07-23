@@ -1,0 +1,3 @@
+Question: {query}
+
+In this image, find the single region that best answers the question. Return STRICT JSON only: {"bbox":[x,y,w,h],"explanation":"..."} where x,y,w,h are fractions of image width/height in [0,1]. No prose.

@@ -1,0 +1,1 @@
+Rewrite the user's FOLLOW-UP as a fully standalone question, resolving pronouns/references from the chat history so it can be understood alone. Return ONLY the rewritten question, nothing else. If it's already standalone, return it unchanged.
